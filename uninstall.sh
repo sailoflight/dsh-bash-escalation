@@ -1,23 +1,24 @@
 #!/usr/bin/env bash
-# Uninstall the dsh-bash-escalation plugins from every DSH profile.
+# Uninstall the dsh-bash-escalation plugins from every DSH profile (clean
+# local-plugin install).
 #
 # Per profile this:
-#   1. Removes the node_modules/@dsh-local symlinks (the installed link points
-#      back to ~/code/dsh-bash-escalation/plugins/*).
+#   1. Removes OUR two plugin dirs `plugins/bash-escalation` and
+#      `plugins/bash-redundant-escalation-noop` (by exact name — other
+#      people's plugins are untouched).
 #   2. Removes the `bash-escalation-guidance` and `bash-redundant-escalation-noop`
 #      entries from cordis.patch.yml (handles both `./plugins/...` and
 #      `@dsh-local/...` name forms), while leaving other entries (e.g. the
 #      taobao MCP client) intact. If a profile's insert list becomes empty it
 #      is reset to the original `[]`.
-#   We deliberately do NOT touch "$dir/plugins/..." — that shared directory
-#   may hold plugins created by others; any orphaned copies are harmless.
+#   3. Cleans up the old `@dsh-local` node_modules symlinks if any remain.
+#   No absolute paths are written anywhere.
 #
 # Usage:
-#   bash ~/code/dsh-bash-escalation/uninstall.sh
+#   bash <path-to>/uninstall.sh
 # then restart every DSH terminal (the in-memory wrap disappears on reboot).
 set -euo pipefail
 
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROFILES="web dsh-tui headless"
 
 for p in $PROFILES; do
@@ -25,12 +26,16 @@ for p in $PROFILES; do
   [ -d "$dir" ] || { echo "skip: $dir not found"; continue; }
   echo "== $p =="
 
-  # 1) symlinks (only our own @dsh-local links)
+  # 1) remove OUR plugin dirs only (exact names, never globs)
+  rm -rf "$dir/plugins/bash-escalation" \
+         "$dir/plugins/bash-redundant-escalation-noop"
+
+  # 2) clean up old @dsh-local node_modules symlinks (only our own)
   rm -f "$dir/node_modules/@dsh-local/bash-escalation" \
         "$dir/node_modules/@dsh-local/bash-redundant-escalation-noop"
   rmdir --ignore-fail-on-non-empty "$dir/node_modules/@dsh-local" 2>/dev/null || true
 
-  # 2) drop the loader entries (id-based, comment-preserving)
+  # 3) drop the loader entries (id-based, comment-preserving)
   python3 - "$dir/cordis.patch.yml" <<'PY'
 import re, sys
 path = sys.argv[1]
