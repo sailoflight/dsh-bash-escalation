@@ -35,6 +35,14 @@
 // cannot be resolved we pass through rather than guess: wrongly stripping
 // would bypass a REAL user approval.
 //
+// SCOPE — this is not bash-only. Every tool that carries the escalation
+// fields is wrapped with the same strip logic: @deepseek-ai/dsh-tool-bash,
+// @deepseek-ai/dsh-tool-fs's write/edit, and @deepseek-ai/dsh-tool-pwsh all
+// declare sandbox_permissions/justification in their parameter schema and all
+// enforce the same strictly-wider check (the observed "not strictly wider"
+// and "invalid justification" failures came from write/edit, not bash). The
+// get() patch wraps ANY tool whose schema declares sandbox_permissions.
+//
 // BASH VARIANTS (custom agent presets): presets such as the user-installed
 // `liangshen` disable the stock tool-bash row and mount PTY-backed bash
 // implementations (@deepseek-ai/dsh-terminal-bash + @deepseek-ai/
@@ -47,9 +55,9 @@
 // with no visible reason. So for a variant without escalation support we fail
 // loud with the upstream message ("sandbox_permissions is not available in
 // this composition ..."), which is precisely what the stock tool says when no
-// sandboxing executor can escalate. Escalation support is derived from the
-// definition's OWN parameter schema, so behavior follows whatever bash the
-// composition actually mounts.
+// sandboxing executor can escalate. bash (including schema-less variants) is
+// therefore ALWAYS wrapped by name; every other tool is wrapped only when its
+// own schema declares the escalation fields.
 //
 // HMR / re-apply safe: the wrap marker records { real, wrapped } so a
 // reloaded plugin instance restores the original execute and re-wraps with
@@ -130,7 +138,19 @@ export function apply(ctx) {
     return realExecute.call(bash, clean, exec);
   };
 
-  // In-place wrap of one bash definition. Idempotent via WRAP_KEY. When
+  // A tool has a real escalation channel only when its OWN parameter schema
+  // declares `sandbox_permissions` (stock bash, fs write/edit, pwsh do;
+  // PTY-backed bash variants such as @deepseek-ai/dsh-tool-bash-persistent
+  // declare only `command` and do not).
+  const hasEscalationSchema = (definition) =>
+    !!definition &&
+    !!definition.parameters &&
+    typeof definition.parameters === 'object' &&
+    !!definition.parameters.properties &&
+    typeof definition.parameters.properties === 'object' &&
+    'sandbox_permissions' in definition.parameters.properties;
+
+  // In-place wrap of one tool definition. Idempotent via WRAP_KEY. When
   // `force` and our previous wrapper still sits on the object, restore the
   // original execute and re-wrap so a reloaded module never keeps a stale
   // wrapper (a closed-over, possibly disposed ctx).
@@ -147,15 +167,10 @@ export function apply(ctx) {
     const realExecute = bash.execute;
     if (typeof realExecute !== 'function') return false;
     // Escalation support = the definition declares sandbox_permissions in its
-    // OWN parameter schema. PTY-backed variants declare only `command` and
-    // therefore cannot escalate; the wrapper must fail loud for them instead
-    // of letting a genuine escalation be silently ignored.
-    const supportsEscalation =
-      !!bash.parameters &&
-      typeof bash.parameters === 'object' &&
-      !!bash.parameters.properties &&
-      typeof bash.parameters.properties === 'object' &&
-      'sandbox_permissions' in bash.parameters.properties;
+    // OWN parameter schema. PTY-backed bash variants declare only `command`
+    // and therefore cannot escalate; the wrapper must fail loud for them
+    // instead of letting a genuine escalation be silently ignored.
+    const supportsEscalation = hasEscalationSchema(bash);
     const wrapped = makeWrapper(bash, realExecute, supportsEscalation);
     bash.execute = wrapped;
     Object.defineProperty(bash, WRAP_KEY, {
@@ -186,7 +201,10 @@ export function apply(ctx) {
     const realGet = toolsService.get.bind(toolsService);
     toolsService.get = (name, scope) => {
       const definition = realGet(name, scope);
-      if (name === 'bash' && definition) wrapBash(definition);
+      // bash is ALWAYS wrapped (including schema-less PTY variants, so the
+      // fail-loud branch applies); every other tool is wrapped only when its
+      // own schema declares the escalation fields (fs write/edit, pwsh, ...).
+      if (definition && (name === 'bash' || hasEscalationSchema(definition))) wrapBash(definition);
       return definition;
     };
     const patchToken = {};
@@ -195,23 +213,25 @@ export function apply(ctx) {
   }
 
   // Eager belt-and-braces: wrap everything already reachable now, and on
-  // future agent creation / tool changes.
-  const sweep = () => {
+  // future agent creation / tool changes. Covers bash (any variant) plus the
+  // known escalation-capable tool names; the get() patch remains the real
+  // guarantee for anything else (and for late-mounted objects).
+  const ESCALATION_TOOL_NAMES = ['bash', 'write', 'edit', 'read', 'read_image', 'pwsh'];
+  const sweepScope = (scope) => {
     if (!toolsService) return;
-    const globalBash = toolsService.get('bash');
-    if (globalBash) wrapBash(globalBash, true);
-    for (const agent of ctx.agents.list()) {
-      const bash = toolsService.get('bash', agent);
-      if (bash) wrapBash(bash, true);
+    for (const name of ESCALATION_TOOL_NAMES) {
+      const tool = toolsService.get(name, scope);
+      if (tool && (name === 'bash' || hasEscalationSchema(tool))) wrapBash(tool, true);
     }
+  };
+  const sweep = () => {
+    sweepScope(void 0);
+    for (const agent of ctx.agents.list()) sweepScope(agent);
   };
 
   try {
     sweep();
-    ctx.on('agent/created', ({ agent }) => {
-      const bash = toolsService?.get('bash', agent);
-      if (bash) wrapBash(bash, true);
-    });
+    ctx.on('agent/created', ({ agent }) => sweepScope(agent));
     ctx.on('tools/change', sweep);
   } catch (error) {
     // Fail-safe: any problem keeps the stock bash untouched.
