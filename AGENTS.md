@@ -1,7 +1,7 @@
 <!-- agent-project-guides:v3:start -->
 ## Project governance routing
 
-Project ID: `dsh-bash-escalation`; variant: `shared-runtime.pinned`; pinned release: `3.0.3` / `sha256:f3dc0ca9cd50d27deac2b4e9c063d243dd3ce20127edc88d9f8b4c3aac4bd603`; manifest: `sha256:5d06293b2c85022ccdf61ffb32423b35fbda795371a8bf9158225908fbc16e88`.
+Project ID: `dsh-bash-escalation`; variant: `shared-runtime.pinned`; pinned release: `3.0.7` / `sha256:50852ae93ac3a935a00d4e3d0f6c8b76857f53b9228f0d47c75dfb3a8a8e5e24`; manifest: `sha256:1768ef9666b2f20a0c335231094d36aaae16a9d1e657411826052c1470637610`.
 
 Before work, run `apg context --target . --task <current-task> --format context` and use only the returned governance content. Resolve any ambiguity before protected work. The shared CLI and exact packed digest are runtime dependencies; missing content fails explicitly and never falls back to `latest`. Returned sources are intended context and do not prove model-effective context.
 <!-- agent-project-guides:v3:end -->
