@@ -41,7 +41,22 @@ function makeRealBash() {
     calls.push(args);
     return { ok: true };
   };
-  return { definition: { execute: realExecute }, calls };
+  return {
+    definition: {
+      execute: realExecute,
+      // stock bash declares the escalation fields in its parameter schema;
+      // the plugin derives escalation support from exactly this
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string' },
+          sandbox_permissions: { type: 'string' },
+          justification: { type: 'string' },
+        },
+      },
+    },
+    calls,
+  };
 }
 
 // A tools service whose get() lives on a prototype (like the real Service
@@ -262,6 +277,73 @@ function makeCtx({ tools, defaultMode = 'workspace-write' } = {}) {
   check('after dispose, a new bash resolves unwrapped (plugin truly removed)', () => {
     assert.equal(tools.tools.get('bash', postAgent).execute, post.definition.execute);
   });
+}
+
+// ── 6. bash VARIANTS without escalation support (persistent/terminal bash) ─
+// Custom agent presets (e.g. `liangshen`) disable the stock tool-bash row and
+// mount a PTY-backed persistent bash (@deepseek-ai/dsh-tool-bash-persistent)
+// under the SAME tool name `bash`, whose parameter schema declares NO
+// sandbox_permissions. Redundant escalations must still be stripped; a
+// GENUINE escalation cannot be honored by such a variant and must fail loud
+// with the upstream message instead of being silently ignored (which would
+// leave the command running under the standing, narrower mode and re-deny).
+{
+  const tools = makeTools();
+  const variant = makeRealBash();
+  // PTY-backed variant schema: only `command`, no escalation fields
+  variant.definition.parameters = {
+    type: 'object',
+    properties: { command: { type: 'string' } },
+  };
+  const vOriginal = variant.definition.execute;
+  tools.state.global = variant.definition;
+  const ctx = makeCtx({ tools: tools.tools });
+  apply(ctx);
+
+  check('variant bash is wrapped like the stock one', () => {
+    assert.notEqual(tools.tools.get('bash').execute, vOriginal);
+  });
+
+  checkAwait('variant: redundant stripped, genuine fails loud, plain passes (sequential)', (async () => {
+    // 1) redundant escalation -> stripped, the command runs
+    await tools.tools.get('bash').execute(
+      { command: 'ls', description: 'x', sandbox_permissions: 'workspace-write', justification: 'r' },
+      { agent: { session: {} } },
+    );
+    let args = variant.calls.at(-1);
+    assert.equal(args.sandbox_permissions, void 0);
+    assert.equal(args.justification, void 0);
+    assert.equal(args.command, 'ls');
+    // 2) genuine escalation -> native error; nothing reaches the real execute
+    await assert.rejects(
+      tools.tools.get('bash').execute(
+        { command: 'rm -rf /x', description: 'x', sandbox_permissions: 'danger-full-access', justification: 'need it' },
+        { agent: { session: {} } },
+      ),
+      /sandbox_permissions is not available in this composition/,
+    );
+    assert.equal(variant.calls.at(-1).command, 'ls');
+    // 3) no escalation args -> straight through
+    await tools.tools.get('bash').execute(
+      { command: 'echo hi', description: 'x' },
+      { agent: { session: {} } },
+    );
+    assert.equal(variant.calls.at(-1).command, 'echo hi');
+  })());
+
+  // stock bash (escalation schema present) keeps genuine escalations passthrough
+  checkAwait('stock bash still passes genuine escalations through', (async () => {
+    const toolsB = makeTools();
+    const stock = makeRealBash();
+    toolsB.state.global = stock.definition;
+    apply(makeCtx({ tools: toolsB.tools }));
+    await toolsB.tools.get('bash').execute(
+      { command: 'pwd', description: 'x', sandbox_permissions: 'danger-full-access', justification: 'real' },
+      { agent: { session: {} } },
+    );
+    assert.equal(stock.calls.at(-1).sandbox_permissions, 'danger-full-access');
+    assert.equal(stock.calls.at(-1).justification, 'real');
+  })());
 }
 
 await Promise.all(pending);

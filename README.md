@@ -12,7 +12,7 @@ Two plugins, both installed per DSH profile (`web`, `dsh-tui`, `headless`):
 | Plugin | Referenced as (relative) | Type | What it does |
 |---|---|---|---|
 | `bash-escalation` | `./plugins/bash-escalation/index.js` | prompt | Adds a system-prompt section: only set `sandbox_permissions` when the requested mode is STRICTLY WIDER than the session's current mode; equal/narrower → omit it. |
-| `bash-redundant-escalation-noop` | `./plugins/bash-redundant-escalation-noop/index.js` | mechanism | Wraps the real `bash` tool's `execute` in place — at **resolution time**, so global and per-agent (preset-mounted) bash definitions are covered no matter when they appear — and strips `sandbox_permissions`/`justification` ONLY when requested ≤ current (never a real escalation). Genuine escalation passes through untouched. |
+| `bash-redundant-escalation-noop` | `./plugins/bash-redundant-escalation-noop/index.js` | mechanism | Wraps the real `bash` tool's `execute` in place — at **resolution time**, so global and per-agent (preset-mounted) bash definitions are covered no matter when they appear — and strips `sandbox_permissions`/`justification` ONLY when requested ≤ current (never a real escalation). Genuine escalation passes through untouched. Bash **variants without escalation support** (PTY-backed persistent/terminal bash from custom agent presets) fail loud with the stock message instead of silently ignoring a genuine escalation. |
 
 ## Why the mechanism plugin wraps at resolution time
 
@@ -49,6 +49,36 @@ resolved `bash` definition's `execute` method **in place**. Wrapping on
   untouched. If the session's effective sandbox mode cannot be resolved we pass
   through rather than guess — wrongly stripping would bypass a REAL user
   approval.
+
+## Bash variants (custom agent presets)
+
+A session's `bash` is not always the stock `@deepseek-ai/dsh-tool-bash`.
+Custom agent presets can disable that row and mount a different implementation
+under the **same tool name** `bash`:
+
+- `@deepseek-ai/dsh-terminal-bash` + `@deepseek-ai/dsh-tool-bash-persistent`
+  (a PTY-backed persistent shell), e.g. the user-installed `liangshen` preset
+  (`~/.dsh/.agent-presets/liangshen/agent.cordis.yml`): its
+  `- id: tool-bash ... disabled: true` row plus a `persistent-shell` group
+  mounting `persistent-bash` / `terminal-bash`.
+
+These variants' parameter schema declares **only** `command` — the tool has no
+escalation machinery at all. The mechanism plugin derives escalation support
+from the definition's **own parameter schema** (`sandbox_permissions`
+declared or not), so behaviour follows whatever bash the composition actually
+mounts:
+
+| Case | Stock bash | Persistent / terminal bash variant |
+|---|---|---|
+| No `sandbox_permissions` in args | passes through | passes through |
+| Redundant (requested ≤ session mode) | stripped, runs | stripped, runs |
+| Genuine (requested > session mode) | passes through → approval flow + strict-widening check | **fails loud**: `sandbox_permissions is not available in this composition (no sandboxing executor to escalate)` |
+
+Failing loud (instead of letting the variant silently ignore the request)
+matters: a genuine escalation handed to a PTY-backed bash would run the
+command under the standing, narrower mode, the sandbox would deny it again,
+and the model would see no reason why. The error is the stock tool's own
+message for a composition that cannot escalate.
 
 ## Layout
 
@@ -95,7 +125,9 @@ It covers the failure the wrap-on-access design fixes — a fresh per-agent bash
 mounted AFTER apply, invisible to `agent/created` / `tools/change`, must be
 wrapped on its first `get()` resolution — plus redundant vs genuine
 escalation, policy-resolution failure (pass-through, never a wrong strip),
-HMR re-apply (fresh wrapper, no chained patches) and dispose (get() restored).
+HMR re-apply (fresh wrapper, no chained patches), dispose (get() restored),
+and bash **variants without escalation support** (redundant stripped, genuine
+escalation fails loud with the native message, plain calls pass through).
 
 ## Notes
 
