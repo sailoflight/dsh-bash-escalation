@@ -1,3 +1,12 @@
 .pnpm-store/
 node_modules/
 .dsh-vision-toolkit/
+
+# --- local hygiene (sailoflight migration) ---
+.venv/
+__pycache__/
+*.pyc
+.cache/
+.claude/
+TESTWORKTREE/
+
