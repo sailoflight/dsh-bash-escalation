@@ -12,7 +12,7 @@ Two plugins, both installed per DSH profile (`web`, `dsh-tui`, `headless`):
 | Plugin | Referenced as (relative) | Type | What it does |
 |---|---|---|---|
 | `bash-escalation` | `./plugins/bash-escalation/index.js` | prompt | Adds a system-prompt section: only set `sandbox_permissions` when the requested mode is STRICTLY WIDER than the session's current mode; equal/narrower → omit it. |
-| `bash-redundant-escalation-noop` | `./plugins/bash-redundant-escalation-noop/index.js` | mechanism | Wraps the real `bash` tool's `execute` in place — at **resolution time**, so global and per-agent (preset-mounted) bash definitions are covered no matter when they appear — and strips `sandbox_permissions`/`justification` ONLY when requested ≤ current (never a real escalation). Genuine escalation passes through untouched. Bash **variants without escalation support** (PTY-backed persistent/terminal bash from custom agent presets) fail loud with the stock message instead of silently ignoring a genuine escalation. |
+| `bash-redundant-escalation-noop` | `./plugins/bash-redundant-escalation-noop/index.js` | mechanism | Wraps the `execute` of **every escalation-capable tool** (bash, the fs `write`/`edit` tools, pwsh — anything whose parameter schema declares `sandbox_permissions`) in place, at **resolution time**, so global and per-agent (preset-mounted) definitions are covered no matter when they appear — and strips `sandbox_permissions`/`justification` ONLY when requested ≤ current (never a real escalation). Genuine escalation passes through untouched. Bash **variants without escalation support** (PTY-backed persistent/terminal bash from custom agent presets) fail loud with the stock message instead of silently ignoring a genuine escalation. |
 
 ## Why the mechanism plugin wraps at resolution time
 
@@ -66,7 +66,17 @@ These variants' parameter schema declares **only** `command` — the tool has no
 escalation machinery at all. The mechanism plugin derives escalation support
 from the definition's **own parameter schema** (`sandbox_permissions`
 declared or not), so behaviour follows whatever bash the composition actually
-mounts:
+mounts.
+
+The plugin is **not bash-only**: the same redundant-escalation failures occur
+on the filesystem tools (`dsh-tool-fs`'s `write`/`edit` — the observed
+"not strictly wider" and "invalid justification" errors came from `edit`/
+`write`, not bash) and on `dsh-tool-pwsh`. The `get()` patch wraps **any tool
+whose parameter schema declares `sandbox_permissions`** (plus `bash` always,
+so schema-less PTY variants still fail loud), so `write`/`edit`/`pwsh` get
+the identical strip/pass-through treatment with no per-tool configuration.
+
+Behaviour per tool:
 
 | Case | Stock bash | Persistent / terminal bash variant |
 |---|---|---|
@@ -126,8 +136,11 @@ mounted AFTER apply, invisible to `agent/created` / `tools/change`, must be
 wrapped on its first `get()` resolution — plus redundant vs genuine
 escalation, policy-resolution failure (pass-through, never a wrong strip),
 HMR re-apply (fresh wrapper, no chained patches), dispose (get() restored),
-and bash **variants without escalation support** (redundant stripped, genuine
-escalation fails loud with the native message, plain calls pass through).
+bash **variants without escalation support** (redundant stripped, genuine
+escalation fails loud with the native message, plain calls pass through), and
+**non-bash escalation tools** (an fs-style `write` gets wrapped by schema,
+redundant escalations stripped, genuine ones passed through; a tool without
+the escalation fields stays untouched).
 
 ## Notes
 

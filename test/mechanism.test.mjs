@@ -62,10 +62,10 @@ function makeRealBash() {
 // A tools service whose get() lives on a prototype (like the real Service
 // class), so deleting our patch restores the original method.
 function makeTools() {
-  const state = { global: undefined, byAgent: new Map() };
+  const state = { global: undefined, byAgent: new Map(), named: new Map() };
   const proto = {
     get(name, scope) {
-      if (name !== 'bash') return void 0;
+      if (name !== 'bash') return state.named.get(name);
       return scope === void 0 ? state.global : state.byAgent.get(scope);
     },
   };
@@ -346,6 +346,57 @@ function makeCtx({ tools, defaultMode = 'workspace-write' } = {}) {
   })());
 }
 
+// ── 7. NON-bash escalation tools (fs write/edit, pwsh) ────────────────────
+// dsh-tool-fs's write/edit declare the SAME sandbox_permissions fields and
+// enforce the SAME strictly-wider check — the observed "not strictly wider"
+// and "invalid justification" failures came from edit/write, not bash. The
+// get() patch wraps ANY tool whose schema declares sandbox_permissions;
+// tools without the field stay untouched.
+{
+  const tools = makeTools();
+  const write = makeRealBash(); // fs-style write: execute records args
+  const writeOriginal = write.definition.execute;
+  tools.state.named.set('write', write.definition);
+  const ctx = makeCtx({ tools: tools.tools });
+  apply(ctx);
+
+  check('write tool (escalation schema) is wrapped by get()', () => {
+    assert.notEqual(tools.tools.get('write').execute, writeOriginal);
+  });
+
+  checkAwait('write: redundant stripped, narrower-under-full stripped, genuine passes (sequential)', (async () => {
+    // 1) redundant (requested == session mode) -> stripped
+    await tools.tools.get('write').execute(
+      { file_path: '/ws/a.txt', content: 'x', sandbox_permissions: 'workspace-write', justification: 'r' },
+      { agent: { session: {} } },
+    );
+    let args = write.calls.at(-1);
+    assert.equal(args.sandbox_permissions, void 0);
+    assert.equal(args.justification, void 0);
+    // 2) redundant narrower request under a wider session mode -> stripped
+    await tools.tools.get('write').execute(
+      { file_path: '/ws/b.txt', content: 'y', sandbox_permissions: 'workspace-write', justification: 'r' },
+      { agent: { session: { mode: 'danger-full-access' } } },
+    );
+    args = write.calls.at(-1);
+    assert.equal(args.sandbox_permissions, void 0);
+    // 3) GENUINE escalation -> passed through untouched (fs tool's own flow)
+    await tools.tools.get('write').execute(
+      { file_path: '/outside/x', content: 'z', sandbox_permissions: 'danger-full-access', justification: 'real' },
+      { agent: { session: {} } },
+    );
+    args = write.calls.at(-1);
+    assert.equal(args.sandbox_permissions, 'danger-full-access');
+    assert.equal(args.justification, 'real');
+  })());
+
+  check('tool without escalation schema stays unwrapped', () => {
+    const plain = makeRealBash();
+    plain.definition.parameters = { type: 'object', properties: { file_path: { type: 'string' } } };
+    tools.state.named.set('read', plain.definition);
+    assert.equal(tools.tools.get('read').execute, plain.definition.execute);
+  });
+}
 await Promise.all(pending);
 console.log(failures === 0 ? '\nAll mechanism tests passed.' : '\n' + failures + ' test(s) FAILED.');
 process.exit(failures === 0 ? 0 : 1);
