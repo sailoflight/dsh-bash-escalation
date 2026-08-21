@@ -35,6 +35,22 @@
 // cannot be resolved we pass through rather than guess: wrongly stripping
 // would bypass a REAL user approval.
 //
+// BASH VARIANTS (custom agent presets): presets such as the user-installed
+// `liangshen` disable the stock tool-bash row and mount PTY-backed bash
+// implementations (@deepseek-ai/dsh-terminal-bash + @deepseek-ai/
+// dsh-tool-bash-persistent) under the SAME tool name `bash`. Their parameter
+// schema declares NO sandbox_permissions — no escalation machinery exists in
+// the tool at all. Redundant escalations are still stripped exactly as above.
+// A GENUINE escalation, however, cannot be honored by such a variant: handing
+// it through would be silently IGNORED by the PTY execute, the command would
+// run under the standing (narrower) mode and get re-denied by the sandbox
+// with no visible reason. So for a variant without escalation support we fail
+// loud with the upstream message ("sandbox_permissions is not available in
+// this composition ..."), which is precisely what the stock tool says when no
+// sandboxing executor can escalate. Escalation support is derived from the
+// definition's OWN parameter schema, so behavior follows whatever bash the
+// composition actually mounts.
+//
 // HMR / re-apply safe: the wrap marker records { real, wrapped } so a
 // reloaded plugin instance restores the original execute and re-wraps with
 // fresh closures (no stale wrapper over a disposed ctx), and the get() patch
@@ -78,7 +94,11 @@ export function apply(ctx) {
   };
 
   // Build the execute wrapper around the CURRENT real execute of one bash.
-  const makeWrapper = (bash, realExecute) => async (args, exec) => {
+  // `supportsEscalation` is derived from the definition's OWN parameter
+  // schema: a real escalation channel exists only when the tool declares the
+  // sandbox_permissions field (the stock bash does; PTY-backed variants such
+  // as @deepseek-ai/dsh-tool-bash-persistent do not).
+  const makeWrapper = (bash, realExecute, supportsEscalation) => async (args, exec) => {
     const clean = { ...args };
     const requested = clean.sandbox_permissions;
     const effectiveMode = resolveEffectiveMode(exec);
@@ -92,6 +112,19 @@ export function apply(ctx) {
     ) {
       delete clean.sandbox_permissions;
       delete clean.justification;
+      return realExecute.call(bash, clean, exec);
+    }
+    if (requested !== undefined && !supportsEscalation) {
+      // Bash variant without escalation machinery (persistent/terminal bash
+      // mounted by a custom agent preset, e.g. `liangshen`): a GENUINE
+      // escalation cannot be honored. Silently dropping it would leave the
+      // command running under the standing (narrower) mode, so the sandbox
+      // would deny it and the model could not see why. Fail loud with the
+      // upstream vocabulary instead — exactly what the stock tool reports
+      // when no sandboxing executor can escalate.
+      throw new Error(
+        'sandbox_permissions is not available in this composition (no sandboxing executor to escalate)',
+      );
     }
     // Delegate to the captured REAL bash execute (never a wrapper).
     return realExecute.call(bash, clean, exec);
@@ -113,7 +146,17 @@ export function apply(ctx) {
     }
     const realExecute = bash.execute;
     if (typeof realExecute !== 'function') return false;
-    const wrapped = makeWrapper(bash, realExecute);
+    // Escalation support = the definition declares sandbox_permissions in its
+    // OWN parameter schema. PTY-backed variants declare only `command` and
+    // therefore cannot escalate; the wrapper must fail loud for them instead
+    // of letting a genuine escalation be silently ignored.
+    const supportsEscalation =
+      !!bash.parameters &&
+      typeof bash.parameters === 'object' &&
+      !!bash.parameters.properties &&
+      typeof bash.parameters.properties === 'object' &&
+      'sandbox_permissions' in bash.parameters.properties;
+    const wrapped = makeWrapper(bash, realExecute, supportsEscalation);
     bash.execute = wrapped;
     Object.defineProperty(bash, WRAP_KEY, {
       value: { real: realExecute, wrapped },
