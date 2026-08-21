@@ -9,10 +9,10 @@ Error: sandbox escalation to "<mode>" is not strictly wider than this call's cur
 
 Two plugins, both installed per DSH profile (`web`, `dsh-tui`, `headless`):
 
-| Plugin | Package name | Type | What it does |
+| Plugin | Referenced as (relative) | Type | What it does |
 |---|---|---|---|
-| `bash-escalation` | `@dsh-local/bash-escalation` | prompt | Adds a system-prompt section: only set `sandbox_permissions` when the requested mode is STRICTLY WIDER than the session's current mode; equal/narrower → omit it. |
-| `bash-redundant-escalation-noop` | `@dsh-local/bash-redundant-escalation-noop` | mechanism | Injects directly into the real `bash` tool: wraps its `execute` in place so `sandbox_permissions`/`justification` are stripped ONLY when requested ≤ current (never a real escalation). Genuine escalation passes through untouched. |
+| `bash-escalation` | `./plugins/bash-escalation/index.js` | prompt | Adds a system-prompt section: only set `sandbox_permissions` when the requested mode is STRICTLY WIDER than the session's current mode; equal/narrower → omit it. |
+| `bash-redundant-escalation-noop` | `./plugins/bash-redundant-escalation-noop/index.js` | mechanism | Injects directly into the real `bash` tool: wraps its `execute` in place so `sandbox_permissions`/`justification` are stripped ONLY when requested ≤ current (never a real escalation). Genuine escalation passes through untouched. |
 
 ## Why the mechanism plugin is an in-place injection, not a copy
 
@@ -37,31 +37,33 @@ If anything fails, it logs a warning and leaves the stock bash untouched
 ## Layout
 
 ```
-~/code/dsh-bash-escalation/
-├── install.sh            # idempotent installer (no pnpm, no network)
+dsh-bash-escalation/
+├── install.sh            # clean installer (no pnpm, no network, no absolute paths)
+├── uninstall.sh          # clean uninstaller
 ├── README.md
 └── plugins/
-    ├── bash-escalation/            → @dsh-local/bash-escalation
-    └── bash-redundant-escalation-noop/  → @dsh-local/bash-redundant-escalation-noop
+    ├── bash-escalation/            → copied to each profile's plugins/
+    └── bash-redundant-escalation-noop/
 ```
 
 ## Install
 
 ```bash
-bash ~/code/dsh-bash-escalation/install.sh
+bash <path-to>/dsh-bash-escalation/install.sh
 ```
 
 Then **restart every DSH terminal** (web / tui / headless).
 
 What the installer does per profile:
-1. `ln -s` the project plugins into `~/.dsh/profiles/<p>/node_modules/@dsh-local/`.
-2. Rewrites `cordis.patch.yml` `name:` from `./plugins/...` to `@dsh-local/...`.
+1. Copies our two plugins into `~/.dsh/profiles/<p>/plugins/` (the standard
+   DSH local-plugin directory). Only our own named dirs are touched.
+2. Writes `cordis.patch.yml` entries as **relative** `./plugins/...` references.
+3. Cleans up any old `node_modules/@dsh-local` symlinks.
 
-It **never touches `~/.dsh/profiles/<p>/plugins/`** — that directory is a
-shared convention others may put plugins in, so we leave it alone. Any old
-`./plugins/...` copies simply become orphaned (no longer referenced), which is
-harmless. The uninstaller likewise only removes our `@dsh-local` links and the
-loader entries.
+**No node_modules, no pnpm, no network, and no absolute paths are written
+anywhere.** The source location is derived at runtime from the script's own
+path, so it works no matter where the project is cloned, and it never interferes
+with other people's plugins or their `pnpm install`.
 
 ## Notes
 
@@ -71,15 +73,7 @@ loader entries.
 
 ## GitHub
 
-Upload to GitHub (owner `sailoflight`, same repo name `dsh-bash-escalation`):
-
-1. On GitHub, create an **empty** repo named `dsh-bash-escalation`
-   (GitHub does not auto-create on push).
-2. In your real terminal:
-   ```bash
-   bash ~/code/dsh-bash-escalation/git-push.sh
-   ```
-
-The script uses your GitHub SSH key `~/.ssh/id_ed25519_github` via
-`GIT_SSH_COMMAND` (no global SSH config changes), sets the git identity to
-`lijq <lijq@localhost>` (matching taobao-mcp), and is idempotent.
+Hosted at `github.com/sailoflight/dsh-bash-escalation` (SSH remote
+`git@github.com:sailoflight/dsh-bash-escalation.git`). Changes are committed
+and pushed from your real terminal with normal `git` commands (using the GitHub
+SSH key `~/.ssh/id_ed25519_github`).
